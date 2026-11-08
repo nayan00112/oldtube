@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OldTube</title>
+<style>
+/* Plain CSS only: no flexbox, no variables, no grid, so old browsers cope. */
+html, body { margin: 0; padding: 0; background: #e8e4da; color: #1c2430; font-family: Arial, Helvetica, sans-serif; font-size: 16px; line-height: 1.4; }
+#wrap { max-width: 820px; margin: 0 auto; padding: 10px; }
+h1 { margin: 6px 0 10px 0; font-size: 22px; color: #1c2430; }
+h1 span { color: #c0392b; }
+#bar { background: #1c2430; padding: 8px; overflow: hidden; }
+#q { float: left; width: 70%; box-sizing: border-box; -moz-box-sizing: border-box; height: 40px; padding: 6px 8px; font-size: 16px; border: 2px solid #fff; background: #fff; color: #000; }
+#go { float: right; width: 28%; height: 40px; font-size: 16px; font-weight: bold; border: 0; background: #f2c14e; color: #1c2430; cursor: pointer; }
+#hint { font-size: 13px; color: #4a5560; margin: 6px 0 10px 0; }
+#stage { display: none; margin-bottom: 12px; }
+#box { position: relative; width: 100%; height: 0; padding-bottom: 56.25%; background: #000; }
+#box iframe { position: absolute; left: 0; top: 0; width: 100%; height: 100%; border: 0; }
+#ctl { background: #1c2430; padding: 8px; color: #fff; overflow: hidden; font-size: 14px; }
+#ctl select, #ctl button { font-size: 14px; padding: 6px 8px; margin: 2px 6px 2px 0; }
+#status { margin: 8px 0; font-size: 14px; color: #8a2a1f; min-height: 18px; }
+h2 { font-size: 17px; margin: 14px 0 6px 0; border-bottom: 2px solid #1c2430; padding-bottom: 3px; }
+.item { background: #fff; margin-bottom: 8px; overflow: hidden; cursor: pointer; border-left: 5px solid #c0392b; }
+.item img { float: left; width: 128px; height: 72px; background: #999; margin: 0 10px 0 0; }
+.item .t { padding: 6px 6px 0 0; font-weight: bold; font-size: 15px; }
+.item .m { padding: 2px 6px 6px 0; font-size: 12px; color: #55606b; }
+.item .x { float: right; margin: 6px; font-size: 13px; padding: 4px 8px; }
+#set { display: none; background: #fff; padding: 10px; margin-top: 8px; }
+#set textarea { width: 100%; box-sizing: border-box; -moz-box-sizing: border-box; height: 90px; font-size: 13px; }
+a.lnk { color: #1c5d99; cursor: pointer; text-decoration: underline; font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>Old<span>Tube</span></h1>
+
+  <form id="f" onsubmit="return doGo();">
+    <div id="bar">
+      <input id="q" type="text" placeholder="Search, or paste a YouTube link / ID" autocomplete="off" autocapitalize="off" autocorrect="off">
+      <input id="go" type="submit" value="Go">
+    </div>
+  </form>
+  <div id="hint">Paste a link to play it. Type words to search.</div>
+
+  <div id="stage">
+    <div id="box"></div>
+    <div id="ctl">
+      Player:
+      <select id="mode" onchange="changeMode();">
+        <option value="yt">YouTube embed</option>
+        <option value="inv">Invidious (lighter)</option>
+      </select>
+      <button type="button" onclick="saveCurrent();">Save</button>
+      <button type="button" onclick="stopVideo();">Close</button>
+    </div>
+  </div>
+
+  <div id="status"></div>
+  <div id="results"></div>
+
+  <h2>Saved</h2>
+  <div id="saved"></div>
+
+  <p><a class="lnk" onclick="toggleSet();">Settings: search servers</a></p>
+  <div id="set">
+    <div style="font-size:13px;margin-bottom:4px;"><b>YouTube API key</b> (recommended, free). Makes search reliable.</div>
+    <input id="key" type="text" style="width:100%;box-sizing:border-box;-moz-box-sizing:border-box;font-size:14px;padding:6px;margin-bottom:6px;" placeholder="Paste API key here" autocomplete="off" autocapitalize="off" autocorrect="off">
+    <button type="button" onclick="saveKey();">Save key</button>
+    <div style="font-size:12px;color:#55606b;margin:6px 0 12px 0;">Get one at console.cloud.google.com: create a project, enable "YouTube Data API v3", then Credentials, Create API key. Free quota is about 100 searches a day.</div>
+    <div style="font-size:13px;margin-bottom:4px;">Backup: one Invidious server per line. They are tried in order. If search fails, replace them with working ones.</div>
+    <textarea id="inst"></textarea>
+    <div style="margin-top:6px;"><button type="button" onclick="saveInst();">Save servers</button> <button type="button" onclick="resetInst();">Reset</button></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var DEFAULT_INST = [
+    'https://inv.nadeko.net',
+    'https://yewtu.be',
+    'https://invidious.nerdvpn.de',
+    'https://invidious.privacyredirect.com'
+  ];
+  var instances = DEFAULT_INST.slice(0);
+  var currentId = '';
+  var currentTitle = '';
+  var titleCache = {};
+
+  function $(id) { return document.getElementById(id); }
+  function setText(el, s) {
+    if ('textContent' in el) { el.textContent = s; } else { el.innerText = s; }
+  }
+  function status(s) { setText($('status'), s || ''); }
+
+  /* ---------- storage (may be missing or blocked on old devices) ---------- */
+  function lsGet(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { window.localStorage.setItem(k, v); return true; } catch (e) { return false; } }
+
+  function loadInst() {
+    var raw = lsGet('ot_inst');
+    if (raw) {
+      var parts = raw.split('\n'), out = [], i, s;
+      for (i = 0; i < parts.length; i++) {
+        s = parts[i].replace(/^\s+|\s+$/g, '').replace(/\/+$/, '');
+        if (s) { out.push(s); }
+      }
+      if (out.length) { instances = out; }
+    }
+    $('inst').value = instances.join('\n');
+  }
+  window.saveInst = function () {
+    lsSet('ot_inst', $('inst').value);
+    loadInst();
+    status('Servers saved.');
+  };
+  window.resetInst = function () {
+    lsSet('ot_inst', '');
+    instances = DEFAULT_INST.slice(0);
+    $('inst').value = instances.join('\n');
+    status('Servers reset.');
+  };
+  var apiKey = '';
+  function loadKey() { apiKey = lsGet('ot_key') || ''; $('key').value = apiKey; }
+  window.saveKey = function () {
+    apiKey = $('key').value.replace(/^\s+|\s+$/g, '');
+    lsSet('ot_key', apiKey);
+    status(apiKey ? 'Key saved.' : 'Key removed.');
+  };
+  window.toggleSet = function () {
+    var s = $('set');
+    s.style.display = (s.style.display === 'block') ? 'none' : 'block';
+  };
+
+  function getSaved() {
+    var raw = lsGet('ot_saved');
+    if (!raw) { return []; }
+    try { var a = JSON.parse(raw); return (a && a.length !== undefined) ? a : []; } catch (e) { return []; }
+  }
+  function putSaved(a) { lsSet('ot_saved', JSON.stringify(a)); }
+
+  /* ---------- id parsing ---------- */
+  function parseId(s) {
+    s = s.replace(/^\s+|\s+$/g, '');
+    var m;
+    if (/^[A-Za-z0-9_-]{11}$/.test(s)) { return s; }
+    m = s.match(/[?&]v=([A-Za-z0-9_-]{11})/);
+    if (m) { return m[1]; }
+    m = s.match(/(?:youtu\.be\/|\/embed\/|\/shorts\/|\/live\/|\/v\/)([A-Za-z0-9_-]{11})/);
+    if (m) { return m[1]; }
+    return '';
+  }
+
+  /* ---------- player ---------- */
+  function embedUrl(id) {
+    if ($('mode').value === 'inv') {
+      return instances[0] + '/embed/' + id + '?autoplay=1';
+    }
+    return 'https://www.youtube-nocookie.com/embed/' + id + '?autoplay=1&rel=0&playsinline=1';
+  }
+  function play(id, title) {
+    currentId = id;
+    currentTitle = title || titleCache[id] || '';
+    var box = $('box');
+    box.innerHTML = '';
+    var fr = document.createElement('iframe');
+    fr.setAttribute('allowfullscreen', 'allowfullscreen');
+    fr.setAttribute('allow', 'autoplay; fullscreen; encrypted-media');
+    fr.setAttribute('frameborder', '0');
+    fr.src = embedUrl(id);
+    box.appendChild(fr);
+    $('stage').style.display = 'block';
+    status('');
+    try { window.scrollTo(0, 0); } catch (e) {}
+  }
+  window.changeMode = function () { if (currentId) { play(currentId, currentTitle); } };
+  window.stopVideo = function () {
+    $('box').innerHTML = '';
+    $('stage').style.display = 'none';
+    currentId = '';
+  };
+  window.saveCurrent = function () {
+    if (!currentId) { return; }
+    var a = getSaved(), i;
+    for (i = 0; i < a.length; i++) { if (a[i].id === currentId) { status('Already saved.'); return; } }
+    a.unshift({ id: currentId, title: currentTitle || ('Video ' + currentId) });
+    putSaved(a);
+    renderSaved();
+    status('Saved.');
+  };
+
+  /* ---------- list rendering ---------- */
+  function makeItem(id, title, meta, onRemove) {
+    var d = document.createElement('div');
+    d.className = 'item';
+    if (onRemove) {
+      var x = document.createElement('button');
+      x.className = 'x';
+      x.type = 'button';
+      setText(x, 'Remove');
+      x.onclick = function (ev) {
+        ev = ev || window.event;
+        if (ev.stopPropagation) { ev.stopPropagation(); } else { ev.cancelBubble = true; }
+        onRemove();
+      };
+      d.appendChild(x);
+    }
+    var im = document.createElement('img');
+    im.src = 'https://i.ytimg.com/vi/' + id + '/mqdefault.jpg';
+    im.alt = '';
+    d.appendChild(im);
+    var t = document.createElement('div');
+    t.className = 't';
+    setText(t, title);
+    d.appendChild(t);
+    if (meta) {
+      var m = document.createElement('div');
+      m.className = 'm';
+      setText(m, meta);
+      d.appendChild(m);
+    }
+    var c = document.createElement('div');
+    c.style.clear = 'both';
+    d.appendChild(c);
+    d.onclick = function () { play(id, title); };
+    return d;
+  }
+
+  function renderSaved() {
+    var box = $('saved'), a = getSaved(), i;
+    box.innerHTML = '';
+    if (!a.length) {
+      var e = document.createElement('div');
+      e.style.fontSize = '14px';
+      setText(e, 'Nothing saved yet. Open a video and press Save.');
+      box.appendChild(e);
+      return;
+    }
+    for (i = 0; i < a.length; i++) {
+      (function (idx) {
+        box.appendChild(makeItem(a[idx].id, a[idx].title, '', function () {
+          var cur = getSaved();
+          cur.splice(idx, 1);
+          putSaved(cur);
+          renderSaved();
+        }));
+      })(i);
+    }
+  }
+
+  function fmtDur(sec) {
+    sec = parseInt(sec, 10) || 0;
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return (h ? h + ':' + p(m) : m) + ':' + p(s);
+  }
+
+  function renderResults(list) {
+    var box = $('results'), i, v;
+    box.innerHTML = '';
+    var n = 0;
+    for (i = 0; i < list.length; i++) {
+      v = list[i];
+      if (v.type && v.type !== 'video') { continue; }
+      if (!v.videoId) { continue; }
+      titleCache[v.videoId] = v.title;
+      var meta = (v.author || '') + (v.lengthSeconds ? '  |  ' + fmtDur(v.lengthSeconds) : '');
+      box.appendChild(makeItem(v.videoId, v.title || v.videoId, meta, null));
+      n++;
+    }
+    if (!n) { status('No videos found.'); }
+  }
+
+  /* ---------- search via Invidious API, trying each server in turn ---------- */
+  function xhrGet(url, ok, fail) {
+    var x, done = false, timer;
+    try { x = new XMLHttpRequest(); } catch (e) { fail(); return; }
+    function end(good, txt) {
+      if (done) { return; }
+      done = true;
+      clearTimeout(timer);
+      if (good) { ok(txt); } else { fail(); }
+    }
+    timer = setTimeout(function () { try { x.abort(); } catch (e) {} end(false); }, 9000);
+    x.onreadystatechange = function () {
+      if (x.readyState === 4) { end(x.status >= 200 && x.status < 300, x.responseText); }
+    };
+    try { x.open('GET', url, true); x.send(null); } catch (e2) { end(false); }
+  }
+
+  function decodeEnt(t) {
+    return (t || '').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  }
+  function ytSearch(term) {
+    status('Searching...');
+    var url = 'https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=15&q=' + encodeURIComponent(term) + '&key=' + encodeURIComponent(apiKey);
+    var x;
+    try { x = new XMLHttpRequest(); } catch (e) { status('This browser cannot make web requests.'); return; }
+    x.onreadystatechange = function () {
+      if (x.readyState !== 4) { return; }
+      var data = null;
+      try { data = JSON.parse(x.responseText); } catch (e2) {}
+      if (x.status === 200 && data && data.items) {
+        var list = [], i, it;
+        for (i = 0; i < data.items.length; i++) {
+          it = data.items[i];
+          if (it.id && it.id.videoId) {
+            list.push({ type: 'video', videoId: it.id.videoId, title: decodeEnt(it.snippet.title), author: decodeEnt(it.snippet.channelTitle) });
+          }
+        }
+        status('');
+        renderResults(list);
+      } else if (data && data.error) {
+        status('YouTube API error: ' + (data.error.message || x.status));
+      } else {
+        status('Could not reach the YouTube API (status ' + x.status + '). Check the internet connection and the key.');
+      }
+    };
+    try { x.open('GET', url, true); x.send(null); } catch (e3) { status('Request blocked by this browser.'); }
+  }
+
+  function search(term, idx) {
+    if (idx >= instances.length) {
+      status('Search failed. Open Settings and add a free YouTube API key (most public Invidious servers no longer work), or paste a video link.');
+      return;
+    }
+    status('Searching... (server ' + (idx + 1) + ' of ' + instances.length + ')');
+    var url = instances[idx] + '/api/v1/search?type=video&q=' + encodeURIComponent(term);
+    xhrGet(url, function (txt) {
+      var data;
+      try { data = JSON.parse(txt); } catch (e) { search(term, idx + 1); return; }
+      if (!data || data.length === undefined) { search(term, idx + 1); return; }
+      status('');
+      renderResults(data);
+    }, function () { search(term, idx + 1); });
+  }
+
+  window.doGo = function () {
+    var v = $('q').value.replace(/^\s+|\s+$/g, '');
+    if (!v) { return false; }
+    var id = parseId(v);
+    if (id) {
+      $('results').innerHTML = '';
+      play(id, '');
+    } else {
+      if (apiKey) { ytSearch(v); } else { search(v, 0); }
+    }
+    try { $('q').blur(); } catch (e) {}
+    return false;
+  };
+
+  loadInst();
+  loadKey();
+  renderSaved();
+})();
+</script>
+</body>
+</html>
